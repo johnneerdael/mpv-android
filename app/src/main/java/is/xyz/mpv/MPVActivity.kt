@@ -180,6 +180,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
 
     private var ignoreAudioFocus = false
     private var playlistExitWarning = true
+    private var newIntentReplace = false
 
     private var smoothSeekGesture = false
     /* * */
@@ -336,6 +337,11 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         // Suppress any further callbacks
         activityIsForeground = false
 
+        if (becomingNoisyReceiverRegistered) {
+            unregisterReceiver(becomingNoisyReceiver)
+            becomingNoisyReceiverRegistered = false
+        }
+
         BackgroundPlaybackService.mediaToken = null
         mediaSession?.let {
             it.isActive = false
@@ -368,8 +374,13 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         }
 
         if (!activityIsForeground && didResumeBackgroundPlayback) {
-            MPVLib.command(arrayOf("loadfile", filepath, "append"))
-            showToast(getString(R.string.notice_file_appended))
+            if (this.newIntentReplace) {
+                MPVLib.command(arrayOf("loadfile", filepath, "replace"))
+                showToast(getString(R.string.notice_file_play))
+            } else {
+                MPVLib.command(arrayOf("loadfile", filepath, "append"))
+                showToast(getString(R.string.notice_file_appended))
+            }
             moveTaskToBack(true)
         } else {
             MPVLib.command(arrayOf("loadfile", filepath))
@@ -489,6 +500,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         this.useTimeRemaining = prefs.getBoolean("use_time_remaining", false)
         this.ignoreAudioFocus = prefs.getBoolean("ignore_audio_focus", false)
         this.playlistExitWarning = prefs.getBoolean("playlist_exit_warning", true)
+        this.newIntentReplace = prefs.getBoolean("new_intent_replace", false)
         this.smoothSeekGesture = prefs.getBoolean("seek_gesture_smooth", false)
     }
 
@@ -1119,6 +1131,9 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         }
 
         // Refer to http://mpv-android.github.io/mpv-android/intent.html
+        // Note: these only apply to the first file, it's not clear what the semantics for a
+        // playlist should be.
+
         if (extras.getByte("decode_mode") == 2.toByte())
             pushOption("hwdec", "no")
         if (extras.containsKey("subs")) {
@@ -1961,11 +1976,18 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     }
 
     override fun event(eventId: Int) {
+        if (eventId == MpvEvent.MPV_EVENT_END_FILE) {
+            psc.eof()
+            updateMediaSession()
+        }
+
         if (eventId == MpvEvent.MPV_EVENT_SHUTDOWN)
             finishWithResult(if (playbackHasStarted) RESULT_OK else RESULT_CANCELED)
 
         if (eventId == MpvEvent.MPV_EVENT_START_FILE) {
-            for (c in onloadCommands)
+            val cmds = onloadCommands.toTypedArray()
+            onloadCommands.clear()
+            for (c in cmds)
                 MPVLib.command(c)
             if (this.statsLuaMode > 0 && !playbackHasStarted) {
                 MPVLib.command(arrayOf("script-binding", "stats/display-page-${this.statsLuaMode}-toggle"))
